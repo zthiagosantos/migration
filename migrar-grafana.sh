@@ -22,6 +22,7 @@
 # Outras:
 #   -m DIR   pasta com sqlitedump-fixed.sh/escape-fixed.awk (padrão: a do script)
 #   -n       só gera o dump, não importa
+#   -y       não pergunta: para e reinicia o serviço do Grafana automaticamente
 #   -o(utro) use -O para definir o arquivo .sql de saída
 
 set -euo pipefail
@@ -87,7 +88,8 @@ MIGRATOR_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
 uso() { sed -n '3,26p' "$SELF" | sed 's/^# \{0,1\}//'; exit 1; }
 
-while getopts "f:d:u:H:P:m:O:o:k:i:nh" opt; do
+AUTO_SIM=0
+while getopts "f:d:u:H:P:m:O:o:k:i:nyh" opt; do
     case $opt in
         f) SQLITE_FILE="$OPTARG" ;;
         d) DB_NAME="$OPTARG" ;;
@@ -100,6 +102,7 @@ while getopts "f:d:u:H:P:m:O:o:k:i:nh" opt; do
         k) OLD_KEY="$OPTARG" ;;
         i) NEW_INI="$OPTARG" ;;
         n) SKIP_IMPORT=1 ;;
+        y) AUTO_SIM=1 ;;
         h|*) uso ;;
     esac
 done
@@ -125,6 +128,15 @@ if [[ -z "${MYSQL_PWD:-}" ]]; then
     read -rs MYSQL_PWD < "$TTY"; echo >&2
     export MYSQL_PWD
 fi
+confirmar() {  # confirmar "texto" -> 0 = sim
+    (( AUTO_SIM )) && return 0
+    [[ -e "$TTY" ]] || return 1
+    local r
+    printf "  ${CC}▸${C0} %s ${CDIM}[s]${C0}: " "$1" >&2
+    read -r r < "$TTY" || r=""
+    [[ -z "$r" || "${r,,}" == "s" ]]
+}
+
 MYSQL_CMD=(mysql --default-character-set=utf8mb4 -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "$DB_NAME")
 sql() { "${MYSQL_CMD[@]}" -N -B -e "$1"; }
 
@@ -231,8 +243,40 @@ fi
 
 # ------------------------------------------------------------------ importar
 secao "Import  ${CDIM}(as tabelas serão truncadas)${C0}"
-echo "  ${CY}⏸  Grafana precisa estar PARADO. Prosseguindo em 5s (Ctrl-C aborta)...${C0}"
-sleep 5
+
+# --- detecta o serviço do Grafana (systemd) ---
+SERVICO=""
+PARAMOS_NOS=0
+if command -v systemctl >/dev/null 2>&1; then
+    for u in grafana-server grafana; do
+        if systemctl cat "$u" >/dev/null 2>&1; then SERVICO="$u"; break; fi
+    done
+fi
+
+if [[ -n "$SERVICO" ]] && systemctl is-active --quiet "$SERVICO"; then
+    aviso "serviço $SERVICO está ATIVO — importar com ele rodando corrompe os dados."
+    if confirmar "Parar o $SERVICO agora?"; then
+        parar_servico() { systemctl stop "$SERVICO"; }
+        passo "Parando o serviço $SERVICO" parar_servico || erro "não consegui parar o $SERVICO"
+        PARAMOS_NOS=1
+        for _ in $(seq 1 10); do
+            systemctl is-active --quiet "$SERVICO" || break
+            sleep 1
+        done
+    else
+        erro "import cancelado: pare o Grafana antes (systemctl stop $SERVICO)."
+    fi
+elif [[ -n "$SERVICO" ]]; then
+    ok "Serviço $SERVICO já está parado."
+else
+    # sem unidade systemd: pode ser Docker/binário solto — checa processo
+    if pgrep -x grafana >/dev/null 2>&1 || pgrep -f 'grafana server' >/dev/null 2>&1; then
+        aviso "há um processo do Grafana rodando e não é um serviço systemd (Docker?)."
+        confirmar "Já parei o Grafana manualmente. Continuar?" || erro "import cancelado."
+    else
+        nota "nenhum Grafana em execução detectado."
+    fi
+fi
 
 importar() { "${MYSQL_CMD[@]}" < "$DUMP_FILE"; }
 if passo "Importando dados para o MySQL" importar; then
@@ -259,10 +303,37 @@ else
     ok "Integridade: todos os dashboards aprovados no teste JSON_VALID."
 fi
 
+# --- religa o serviço, se fomos nós que paramos ---
+REINICIADO=0
+if (( PARAMOS_NOS )); then
+    secao "Serviço"
+    if confirmar "Iniciar o $SERVICO novamente?"; then
+        iniciar_servico() { systemctl start "$SERVICO"; }
+        if passo "Iniciando o serviço $SERVICO" iniciar_servico; then
+            sleep 2
+            if systemctl is-active --quiet "$SERVICO"; then
+                ok "Serviço $SERVICO ativo."
+                REINICIADO=1
+            else
+                aviso "o $SERVICO não subiu — veja: journalctl -u $SERVICO -n 50"
+            fi
+        else
+            aviso "falha ao iniciar; veja: journalctl -u $SERVICO -n 50"
+        fi
+    else
+        nota "inicie quando quiser: systemctl start $SERVICO"
+    fi
+fi
+
 echo
 echo "${CG}${CB}  ✔ MIGRAÇÃO CONCLUÍDA COM SUCESSO.${C0}"
 secao "Próximos passos"
-echo "  ${CDIM}1.${C0} Inicie o serviço do Grafana."
-echo "  ${CDIM}2.${C0} Valide o acesso (os usuários precisarão realizar um novo login)."
-echo "  ${CDIM}3.${C0} Verifique a integridade das pastas, dashboards e datasources."
+if (( REINICIADO )); then
+    echo "  ${CDIM}1.${C0} Acesse o Grafana e valide o login (os usuários precisarão logar de novo)."
+    echo "  ${CDIM}2.${C0} Verifique a integridade das pastas, dashboards e datasources."
+else
+    echo "  ${CDIM}1.${C0} Inicie o serviço do Grafana${SERVICO:+ (systemctl start $SERVICO)}."
+    echo "  ${CDIM}2.${C0} Valide o acesso (os usuários precisarão realizar um novo login)."
+    echo "  ${CDIM}3.${C0} Verifique a integridade das pastas, dashboards e datasources."
+fi
 echo

@@ -254,18 +254,22 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 if [[ -n "$SERVICO" ]] && systemctl is-active --quiet "$SERVICO"; then
-    aviso "serviço $SERVICO está ATIVO — importar com ele rodando corrompe os dados."
-    if confirmar "Parar o $SERVICO agora?"; then
-        parar_servico() { systemctl stop "$SERVICO"; }
-        passo "Parando o serviço $SERVICO" parar_servico || erro "não consegui parar o $SERVICO"
-        PARAMOS_NOS=1
-        for _ in $(seq 1 10); do
-            systemctl is-active --quiet "$SERVICO" || break
+    aviso "serviço $SERVICO está ATIVO — será parado antes do import."
+    parar_servico() {
+        systemctl stop "$SERVICO" || return 1
+        # só retorna quando o serviço estiver realmente inativo (até 30s)
+        local i
+        for i in $(seq 1 30); do
+            systemctl is-active --quiet "$SERVICO" || return 0
             sleep 1
         done
-    else
-        erro "import cancelado: pare o Grafana antes (systemctl stop $SERVICO)."
-    fi
+        return 1
+    }
+    passo "Parando o serviço $SERVICO" parar_servico \
+        || erro "o $SERVICO não parou — import abortado para não corromper os dados.
+       Verifique: systemctl status $SERVICO"
+    PARAMOS_NOS=1
+    ok "Serviço $SERVICO parado — seguro para importar."
 elif [[ -n "$SERVICO" ]]; then
     ok "Serviço $SERVICO já está parado."
 else
@@ -307,21 +311,20 @@ fi
 REINICIADO=0
 if (( PARAMOS_NOS )); then
     secao "Serviço"
-    if confirmar "Iniciar o $SERVICO novamente?"; then
-        iniciar_servico() { systemctl start "$SERVICO"; }
-        if passo "Iniciando o serviço $SERVICO" iniciar_servico; then
-            sleep 2
-            if systemctl is-active --quiet "$SERVICO"; then
-                ok "Serviço $SERVICO ativo."
-                REINICIADO=1
-            else
-                aviso "o $SERVICO não subiu — veja: journalctl -u $SERVICO -n 50"
-            fi
-        else
-            aviso "falha ao iniciar; veja: journalctl -u $SERVICO -n 50"
-        fi
+    iniciar_servico() {
+        systemctl start "$SERVICO" || return 1
+        local i
+        for i in $(seq 1 20); do
+            systemctl is-active --quiet "$SERVICO" && return 0
+            sleep 1
+        done
+        return 1
+    }
+    if passo "Iniciando o serviço $SERVICO" iniciar_servico; then
+        ok "Serviço $SERVICO ativo."
+        REINICIADO=1
     else
-        nota "inicie quando quiser: systemctl start $SERVICO"
+        aviso "o $SERVICO não subiu — veja: journalctl -u $SERVICO -n 50"
     fi
 fi
 

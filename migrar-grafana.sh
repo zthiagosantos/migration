@@ -36,9 +36,9 @@ fi
 
 banner() {
     echo "${CC}${CB}"
-    echo "  ╭─────────────────────────────────────────────╮"
-    echo "  │   Grafana · SQLite ➜ MySQL/MariaDB  (v3)    │"
-    echo "  ╰─────────────────────────────────────────────╯${C0}"
+    echo "  ╭─────────────────────────────────────────╮"
+    echo "  │   Flowbix · SQLite ➜ MySQL/MariaDB      │"
+    echo "  ╰─────────────────────────────────────────╯${C0}"
 }
 secao()  { echo; echo "${CB}${CC}▸ $*${C0}"; }
 ok()     { echo "  ${CG}✔${C0} $*"; }
@@ -92,9 +92,11 @@ command -v mysql   >/dev/null || erro "cliente mysql não instalado"
     || erro "sqlitedump-fixed.sh/escape-fixed.awk não encontrados em $MIGRATOR_DIR (use -m)"
 ok "sqlite3 $(sqlite3 --version | awk '{print $1}'), awk e mysql presentes"
 
+# TTY_DEV permite testes automatizados; em produção é o terminal do usuário.
+TTY="${TTY_DEV:-/dev/tty}"
 if [[ -z "${MYSQL_PWD:-}" ]]; then
-    printf "  %s?%s Senha MySQL para %s@%s: " "$CY" "$C0" "$DB_USER" "$DB_HOST"
-    read -rs MYSQL_PWD; echo
+    printf "  %s?%s Senha MySQL para %s@%s: " "$CY" "$C0" "$DB_USER" "$DB_HOST" >&2
+    read -rs MYSQL_PWD < "$TTY"; echo >&2
     export MYSQL_PWD
 fi
 MYSQL_CMD=(mysql --default-character-set=utf8mb4 -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "$DB_NAME")

@@ -43,7 +43,7 @@ banner() {
     printf "  ${CC}${CB}│%*s%s%*s│${C0}\n" 17 "" "SQLite ➜ MySQL / MariaDB" 17 ""
     printf "  ${CC}${CB}╰"; printf '─%.0s' $(seq 1 $L); printf "╯${C0}\n"
 }
-secao()  { echo; echo "${CB}${CC}▸${C0} ${CB}$*${C0}"; }
+secao()  { echo; echo "${CB}${CC}▸ $*${C0}"; }
 ok()     { echo "  ${CG}✔${C0} $*"; }
 info()   { echo "  ${CDIM}•${C0} $*"; }
 nota()   { echo "  ${CDIM}· $*${C0}"; }

@@ -126,6 +126,23 @@ perguntar() {
     return 0
 }
  
+# igual à perguntar(), mas com readline: Tab autocompleta caminhos de arquivo
+perguntar_arquivo() {
+    local texto="$1" padrao="${2:-}"
+    if [[ -n "$padrao" ]]; then
+        printf "  ${C}▸${N} %s ${D}[%s]${N}: " "$texto" "$padrao" >&2
+    else
+        printf "  ${C}▸${N} %s: " "$texto" >&2
+    fi
+    if [[ -t 3 ]]; then
+        read -e -r -u 3 RESP || RESP=""
+    else
+        read -r -u 3 RESP || RESP=""
+    fi
+    [[ -z "$RESP" ]] && RESP="$padrao"
+    return 0
+}
+ 
 # ------------------------------------------------------------- dependências
 FALTA_CMD=()
 command -v sqlite3 >/dev/null || FALTA_CMD+=(sqlite3)
@@ -182,7 +199,7 @@ if [[ "${RESP,,}" != "s" ]]; then nota "Rode depois com: migrar-grafana -h"; exi
 echo >&2
  
 while :; do
-    perguntar "Caminho do banco de origem (SQLite)" "/var/lib/grafana/grafana.db"
+    perguntar_arquivo "Caminho do banco de origem (SQLite)" "/var/lib/grafana/grafana.db"
     SQLITE_FILE="$RESP"
     [[ -f "$SQLITE_FILE" ]] && break
     falha "não encontrei $SQLITE_FILE"
@@ -191,7 +208,7 @@ perguntar "Banco de destino (MySQL)" "grafana";   DB_NAME="$RESP"
 perguntar "Usuário do banco"         "grafana";   DB_USER="$RESP"
 perguntar "Host do banco"            "localhost"; DB_HOST="$RESP"
 perguntar "Porta"                    "3306";      DB_PORT="$RESP"
-perguntar "Caminho do grafana.ini de origem (Enter para pular)" ""
+perguntar_arquivo "Caminho do grafana.ini de origem (Enter para pular)" ""
 OLD_INI="$RESP"
 if [[ -n "$OLD_INI" && ! -f "$OLD_INI" ]]; then aviso "arquivo não existe; validação de secret_key será pulada"; OLD_INI=""; fi
  

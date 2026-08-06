@@ -304,7 +304,7 @@ if [[ "$N_BAD_JSON" != "0" ]]; then
     aviso "$N_BAD_JSON dashboard(s) com JSON inválido:"
     sql "SELECT uid, title FROM dashboard WHERE is_folder=0 AND JSON_VALID(data)=0"
 else
-    ok "Integridade: todos os dashboards aprovados no teste JSON_VALID."
+    ok "Integridade: todos os dashboards aprovados no teste automatizado."
 fi
 
 # --- religa o serviço, se fomos nós que paramos ---

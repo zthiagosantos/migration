@@ -22,32 +22,91 @@ TTY="${TTY_DEV:-/dev/tty}"
 
 ARQUIVOS=(migrar-grafana.sh sqlitedump-fixed.sh escape-fixed.awk)
  
-if [[ -t 1 ]]; then G=$'\e[32m'; R=$'\e[31m'; Y=$'\e[33m'; B=$'\e[1m'; D=$'\e[2m'; N=$'\e[0m'
-else G="";R="";Y="";B="";D="";N=""; fi
+if [[ -t 2 ]]; then
+    G=$'\e[32m'; R=$'\e[31m'; Y=$'\e[33m'; C=$'\e[36m'; B=$'\e[1m'; D=$'\e[2m'; N=$'\e[0m'
+    ANIMA=1
+else
+    G="";R="";Y="";C="";B="";D="";N=""; ANIMA=0
+fi
  
-if [[ -t 1 ]]; then C=$'\e[36m'; else C=""; fi
-echo "${C}${B}"
-echo "  ╭─────────────────────────────────────────╮"
-echo "  │   FLOWBIX · GRAFANA DATABASE MIGRATOR   │"
-echo "  ╰─────────────────────────────────────────╯${N}"
-echo "  ${D}Destino: $DEST${N}"
-[[ "$REPO" == "SEU_USUARIO/SEU_REPO" && "$BASE_URL" == https://raw.githubusercontent.com/* ]] \
-    && { echo "${R}✘ Edite REPO ou BASE_URL no install.sh antes de publicar.${N}"; exit 1; }
-command -v curl >/dev/null || { echo "${R}✘ curl não instalado${N}"; exit 1; }
+secao() { echo >&2; echo "${B}${C}▸${N} ${B}$*${N}" >&2; }
+ok()    { echo "  ${G}✔${N} $*" >&2; }
+falha() { echo "  ${R}✘${N} $*" >&2; }
+aviso() { echo "  ${Y}⚠${N} $*" >&2; }
+nota()  { echo "  ${D}· $*${N}" >&2; }
+ 
+# passo "texto" comando...  → spinner enquanto roda, ✔/✘ ao terminar
+SPIN=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+passo() {
+    local texto="$1"; shift
+    local rc=0
+    if (( ANIMA )); then
+        "$@" >/tmp/.gm-passo.log 2>&1 &
+        local pid=$! i=0
+        while kill -0 "$pid" 2>/dev/null; do
+            printf "\r  ${C}%s${N} %s" "${SPIN[i++ % 10]}" "$texto" >&2
+            sleep 0.08
+        done
+        wait "$pid" || rc=$?
+        printf "\r\033[K" >&2
+    else
+        "$@" >/tmp/.gm-passo.log 2>&1 || rc=$?
+    fi
+    if (( rc == 0 )); then ok "$texto"; else falha "$texto"; fi
+    return $rc
+}
+ 
+# largura em COLUNAS (ignora bytes de continuação UTF-8; independe do locale)
+larg() { LC_ALL=C printf '%s' "$1" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c; }
+ 
+caixa() {  # caixa "linha1" "linha2" ...
+    local L=58 linha pad
+    printf "  ${C}╭" >&2; printf '─%.0s' $(seq 1 $L) >&2; printf "╮${N}\n" >&2
+    for linha in "$@"; do
+        pad=$(( L - 2 - $(larg "$linha") ))
+        (( pad < 0 )) && pad=0
+        printf "  ${C}│${N} %s%*s ${C}│${N}\n" "$linha" "$pad" "" >&2
+    done
+    printf "  ${C}╰" >&2; printf '─%.0s' $(seq 1 $L) >&2; printf "╯${N}\n" >&2
+}
+ 
+banner() {
+    local L=58
+    echo >&2
+    printf "  ${C}${B}╭" >&2; printf '─%.0s' $(seq 1 $L) >&2; printf "╮${N}\n" >&2
+    printf "  ${C}${B}│%*s%s%*s│${N}\n" 16 "" "FLOWBIX • GRAFANA MIGRATOR" 16 "" >&2
+    printf "  ${C}${B}│%*s%s%*s│${N}\n" 17 "" "SQLite ➜ MySQL / MariaDB" 17 "" >&2
+    printf "  ${C}${B}╰" >&2; printf '─%.0s' $(seq 1 $L) >&2; printf "╯${N}\n" >&2
+}
+ 
+banner
+ 
+if [[ "$REPO" == "SEU_USUARIO/SEU_REPO" && "$BASE_URL" == https://raw.githubusercontent.com/* ]]; then
+    secao "Instalação"; falha "Edite REPO ou BASE_URL no install.sh antes de publicar."; exit 1
+fi
+command -v curl >/dev/null || { secao "Instalação"; falha "curl não instalado"; exit 1; }
  
 SUDO=""
 if [[ ! -w "$(dirname "$DEST")" && $EUID -ne 0 ]]; then
-    command -v sudo >/dev/null && SUDO="sudo" || { echo "${R}✘ sem permissão para criar $DEST${N}"; exit 1; }
+    command -v sudo >/dev/null && SUDO="sudo" || { falha "sem permissão para criar $DEST"; exit 1; }
 fi
  
-$SUDO mkdir -p "$DEST"
-for f in "${ARQUIVOS[@]}"; do
-    echo "  ↓ $f"
-    $SUDO curl -fsSL "$BASE_URL/$f" -o "$DEST/$f" \
-        || { echo "${R}✘ falha ao baixar $BASE_URL/$f${N}"; exit 1; }
-done
-$SUDO chmod +x "$DEST/migrar-grafana.sh" "$DEST/sqlitedump-fixed.sh"
-[[ -d /usr/local/bin ]] && $SUDO ln -sf "$DEST/migrar-grafana.sh" /usr/local/bin/migrar-grafana
+# ------------------------------------------------------------------ download
+secao "Instalação"
+ 
+baixar_tudo() {
+    $SUDO mkdir -p "$DEST" || return 1
+    local f
+    for f in "${ARQUIVOS[@]}"; do
+        $SUDO curl -fsSL "$BASE_URL/$f" -o "$DEST/$f" || return 1
+    done
+    $SUDO chmod +x "$DEST/migrar-grafana.sh" "$DEST/sqlitedump-fixed.sh" || return 1
+    if [[ -d /usr/local/bin ]]; then $SUDO ln -sf "$DEST/migrar-grafana.sh" /usr/local/bin/migrar-grafana; fi
+    return 0
+}
+ 
+passo "Baixando arquivos necessários" baixar_tudo \
+    || { nota "verifique a URL: $BASE_URL"; exit 1; }
  
 # terminal interativo (fd 3): usado pelas dependências e pelo assistente
 HAVE_TTY=0
@@ -55,16 +114,16 @@ if [[ "${NO_WIZARD:-0}" != "1" && -e "$TTY" ]]; then
     { exec 3< "$TTY"; } 2>/dev/null && HAVE_TTY=1
 fi
  
-perguntar() {  # perguntar "texto" "padrão" -> resposta em $RESP
+perguntar() {
     local texto="$1" padrao="${2:-}"
     if [[ -n "$padrao" ]]; then
-        printf "  ${Y}?${N} %s ${D}[%s]${N}: " "$texto" "$padrao" >&2
+        printf "  ${C}▸${N} %s ${D}[%s]${N}: " "$texto" "$padrao" >&2
     else
-        printf "  ${Y}?${N} %s: " "$texto" >&2
+        printf "  ${C}▸${N} %s: " "$texto" >&2
     fi
     read -r -u 3 RESP || RESP=""
     [[ -z "$RESP" ]] && RESP="$padrao"
-    echo >&2
+    return 0
 }
  
 # ------------------------------------------------------------- dependências
@@ -72,76 +131,81 @@ FALTA_CMD=()
 command -v sqlite3 >/dev/null || FALTA_CMD+=(sqlite3)
 command -v mysql   >/dev/null || FALTA_CMD+=(mysql)
  
-if (( ${#FALTA_CMD[@]} )) && [[ "${NO_DEPS:-0}" != "1" ]]; then
-    # mapeia comando -> pacote conforme o gerenciador disponível
-    PKGS=() GERENCIADOR="" INSTALAR=""
+if (( ${#FALTA_CMD[@]} == 0 )); then
+    ok "Verificando dependências"
+elif [[ "${NO_DEPS:-0}" == "1" ]]; then
+    aviso "Dependências ausentes: ${FALTA_CMD[*]}"
+else
+    PKGS=() INSTALAR=""
     if command -v apt-get >/dev/null; then
-        GERENCIADOR="apt"; INSTALAR="apt-get install -y"
+        INSTALAR="apt-get install -y"
         for c in "${FALTA_CMD[@]}"; do
             [[ "$c" == sqlite3 ]] && PKGS+=(sqlite3) || PKGS+=(default-mysql-client)
         done
     elif command -v dnf >/dev/null || command -v yum >/dev/null; then
-        GERENCIADOR="dnf/yum"; INSTALAR="$(command -v dnf || command -v yum) install -y"
+        INSTALAR="$(command -v dnf || command -v yum) install -y"
         for c in "${FALTA_CMD[@]}"; do
             [[ "$c" == sqlite3 ]] && PKGS+=(sqlite) || PKGS+=(mariadb)
         done
     fi
  
-    if [[ -n "$GERENCIADOR" ]]; then
-        echo "${Y}⚠ pacotes necessários não encontrados:${N} ${PKGS[*]}"
-        if [[ "${AUTO_DEPS:-0}" == "1" ]]; then
-            RESP="s"
-        elif (( HAVE_TTY )); then
-            perguntar "Instalar agora? (s/n)" "s"
-        else
-            RESP="n"
-        fi
+    if [[ -n "$INSTALAR" ]]; then
+        aviso "Pacotes necessários não encontrados: ${PKGS[*]}"
+        if [[ "${AUTO_DEPS:-0}" == "1" ]]; then RESP="s"
+        elif (( HAVE_TTY )); then perguntar "Instalar agora? (s/n)" "s"
+        else RESP="n"; fi
+ 
         if [[ "${RESP,,}" == "s" ]]; then
-            echo "  ${D}· $SUDO $INSTALAR ${PKGS[*]}${N}"
-            if [[ "$GERENCIADOR" == "apt" ]]; then
-                $SUDO apt-get update -qq >/dev/null 2>&1 || true
-            fi
-            $SUDO $INSTALAR "${PKGS[@]}" >/dev/null                 && echo "  ${G}✔ dependências instaladas${N}"                 || { echo "  ${R}✘ falha ao instalar; instale manualmente: $SUDO $INSTALAR ${PKGS[*]}${N}"; exit 1; }
+            instalar_deps() {
+                command -v apt-get >/dev/null && { $SUDO apt-get update -qq >/dev/null 2>&1 || true; }
+                $SUDO $INSTALAR "${PKGS[@]}"
+            }
+            passo "Instalando dependências (${PKGS[*]})" instalar_deps \
+                || { nota "instale manualmente: $SUDO $INSTALAR ${PKGS[*]}"; exit 1; }
         else
-            echo "  ${D}instale manualmente: $SUDO $INSTALAR ${PKGS[*]}${N}"
+            nota "instale manualmente: $SUDO $INSTALAR ${PKGS[*]}"
         fi
     else
-        echo "${Y}⚠ instale antes de migrar: ${FALTA_CMD[*]}${N}"
-        echo "  ${D}macOS: brew install sqlite mysql-client${N}"
+        aviso "Dependências ausentes: ${FALTA_CMD[*]}"
+        nota "macOS: brew install sqlite mysql-client"
     fi
 fi
  
-echo "${G}✔ Instalado.${N} Comando disponível: ${B}migrar-grafana${N}"
+ok "Componentes instalados em $DEST"
  
 # ---------------------------------------------------------------- assistente
 (( HAVE_TTY )) || exit 0
  
-echo >&2
-echo "${B}${C}▸ Assistente de migração${N}  ${D}(Enter aceita o valor entre colchetes)${N}" >&2
+secao "Assistente de migração ${D}(Pressione Enter para aceitar os valores padrão)${N}"
 perguntar "Executar a migração agora? (s/n)" "s"
-[[ "${RESP,,}" != "s" ]] && { echo "  ${D}Ok — rode depois com: migrar-grafana -h${N}" >&2; exit 0; }
+if [[ "${RESP,,}" != "s" ]]; then nota "Rode depois com: migrar-grafana -h"; exit 0; fi
+echo >&2
  
-DB_PADRAO="/var/lib/grafana/grafana.db"
 while :; do
-    perguntar "Caminho do grafana.db (origem)" "$DB_PADRAO"
+    perguntar "Caminho do banco de origem (SQLite)" "/var/lib/grafana/grafana.db"
     SQLITE_FILE="$RESP"
     [[ -f "$SQLITE_FILE" ]] && break
-    echo "  ${R}✘ não encontrei $SQLITE_FILE${N}" >&2
+    falha "não encontrei $SQLITE_FILE"
 done
-perguntar "Banco MySQL de destino" "grafana";   DB_NAME="$RESP"
-perguntar "Usuário MySQL" "grafana";   DB_USER="$RESP"
-perguntar "Host MySQL" "localhost"; DB_HOST="$RESP"
-perguntar "Porta MySQL" "3306";      DB_PORT="$RESP"
-perguntar "grafana.ini ANTIGO para validar secret_key (Enter pula)" ""
+perguntar "Banco de destino (MySQL)" "grafana";   DB_NAME="$RESP"
+perguntar "Usuário do banco"         "grafana";   DB_USER="$RESP"
+perguntar "Host do banco"            "localhost"; DB_HOST="$RESP"
+perguntar "Porta"                    "3306";      DB_PORT="$RESP"
+perguntar "Caminho do grafana.ini de origem (Enter para pular)" ""
 OLD_INI="$RESP"
-[[ -n "$OLD_INI" && ! -f "$OLD_INI" ]] && { echo "  ${Y}⚠ arquivo não existe; a validação de secret_key será pulada${N}" >&2; OLD_INI=""; }
+if [[ -n "$OLD_INI" && ! -f "$OLD_INI" ]]; then aviso "arquivo não existe; validação de secret_key será pulada"; OLD_INI=""; fi
  
-echo >&2
-echo "  ${D}·${N} ${B}Resumo:${N} $SQLITE_FILE → $DB_USER@$DB_HOST:$DB_PORT/$DB_NAME${OLD_INI:+  (secret_key: $OLD_INI)}" >&2
-perguntar "Confirmar e executar? (s/n)" "s"
-[[ "${RESP,,}" != "s" ]] && { echo "  ${D}Abortado.${N}" >&2; exit 0; }
+secao "Resumo da operação"
+if [[ -n "$OLD_INI" ]]; then
+    caixa "• Origem:  $SQLITE_FILE" "• Destino: $DB_USER@$DB_HOST:$DB_PORT/$DB_NAME" "• Ini:     $OLD_INI"
+else
+    caixa "• Origem:  $SQLITE_FILE" "• Destino: $DB_USER@$DB_HOST:$DB_PORT/$DB_NAME"
+fi
+perguntar "Confirmar e iniciar a migração? (s/n)" "s"
+if [[ "${RESP,,}" != "s" ]]; then nota "Abortado."; exit 0; fi
  
 ARGS=(-f "$SQLITE_FILE" -d "$DB_NAME" -u "$DB_USER" -H "$DB_HOST" -P "$DB_PORT" -m "$DEST")
-[[ -n "$OLD_INI" ]] && ARGS+=(-o "$OLD_INI")
+if [[ -n "$OLD_INI" ]]; then ARGS+=(-o "$OLD_INI"); fi
  
+export GM_NO_BANNER=1
 exec bash "$DEST/migrar-grafana.sh" "${ARGS[@]}"

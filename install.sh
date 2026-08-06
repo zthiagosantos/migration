@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # >>>>>> EDITE AQUI depois de subir para o seu servidor/repositório <<<<<<
-REPO="${REPO:-zthiagosantos/migration}"
+REPO="${REPO:-zthiagosantos/grafana-db-migration}"
 BRANCH="${BRANCH:-main}"
 DEST="${DEST:-/opt/grafana-migrator}"
 BASE_URL="${BASE_URL:-https://raw.githubusercontent.com/$REPO/$BRANCH}"

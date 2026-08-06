@@ -35,16 +35,42 @@ else
 fi
 
 banner() {
-    echo "${CC}${CB}"
-    echo "  ╭─────────────────────────────────────────╮"
-    echo "  │   Flowbix · SQLite ➜ MySQL/MariaDB      │"
-    echo "  ╰─────────────────────────────────────────╯${C0}"
+    [[ "${GM_NO_BANNER:-0}" == "1" ]] && return 0
+    local L=58
+    echo
+    printf "  ${CC}${CB}╭"; printf '─%.0s' $(seq 1 $L); printf "╮${C0}\n"
+    printf "  ${CC}${CB}│%*s%s%*s│${C0}\n" 16 "" "FLOWBIX • GRAFANA MIGRATOR" 16 ""
+    printf "  ${CC}${CB}│%*s%s%*s│${C0}\n" 17 "" "SQLite ➜ MySQL / MariaDB" 17 ""
+    printf "  ${CC}${CB}╰"; printf '─%.0s' $(seq 1 $L); printf "╯${C0}\n"
 }
-secao()  { echo; echo "${CB}${CC}▸ $*${C0}"; }
+secao()  { echo; echo "${CB}${CC}▸${C0} ${CB}$*${C0}"; }
 ok()     { echo "  ${CG}✔${C0} $*"; }
-info()   { echo "  ${CDIM}·${C0} $*"; }
-aviso()  { echo "  ${CY}⚠ $*${C0}" >&2; }
+info()   { echo "  ${CDIM}•${C0} $*"; }
+nota()   { echo "  ${CDIM}· $*${C0}"; }
+aviso()  { echo "  ${CY}⚠${C0} $*" >&2; }
 erro()   { echo; echo "  ${CR}${CB}✘ ERRO:${C0}${CR} $*${C0}" >&2; exit 1; }
+
+# passo "texto" comando...  → spinner enquanto roda, ✔/✘ ao terminar
+SPIN=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+ANIMA=0; [[ -t 1 ]] && ANIMA=1
+passo() {
+    local texto="$1"; shift
+    local rc=0
+    if (( ANIMA )); then
+        "$@" >/tmp/.gm-passo.log 2>&1 &
+        local pid=$! i=0
+        while kill -0 "$pid" 2>/dev/null; do
+            printf "\r  ${CC}%s${C0} %s" "${SPIN[i++ % 10]}" "$texto"
+            sleep 0.08
+        done
+        wait "$pid" || rc=$?
+        printf "\r\033[K"
+    else
+        "$@" >/tmp/.gm-passo.log 2>&1 || rc=$?
+    fi
+    if (( rc == 0 )); then ok "$texto"; else echo "  ${CR}✘${C0} $texto"; fi
+    return $rc
+}
 
 # ---------------------------------------------------------------- parâmetros
 SQLITE_FILE="" DB_NAME="" DB_USER="" DB_HOST="localhost" DB_PORT="3306"
@@ -90,7 +116,7 @@ command -v awk     >/dev/null || erro "awk não instalado"
 command -v mysql   >/dev/null || erro "cliente mysql não instalado"
 [[ -f "$MIGRATOR_DIR/sqlitedump-fixed.sh" && -f "$MIGRATOR_DIR/escape-fixed.awk" ]] \
     || erro "sqlitedump-fixed.sh/escape-fixed.awk não encontrados em $MIGRATOR_DIR (use -m)"
-ok "sqlite3 $(sqlite3 --version | awk '{print $1}'), awk e mysql presentes"
+ok "Dependências validadas (sqlite3 $(sqlite3 --version | awk '{print $1}'), awk, mysql)."
 
 # TTY_DEV permite testes automatizados; em produção é o terminal do usuário.
 TTY="${TTY_DEV:-/dev/tty}"
@@ -159,7 +185,7 @@ sql "SELECT 1 FROM migration_log LIMIT 1" >/dev/null 2>&1 \
     || erro "tabela migration_log não existe no MySQL.
        Aponte o grafana.ini para este banco, inicie o Grafana uma vez
        (ele cria o schema), pare o serviço e rode este script de novo."
-ok "schema presente ($(sql "SHOW TABLES" | wc -l) tabelas)"
+ok "Schema validado ($(sql "SHOW TABLES" | wc -l) tabelas)."
 
 CHARSET=$(sql "SELECT default_character_set_name FROM information_schema.SCHEMATA WHERE schema_name='$DB_NAME'")
 if [[ "$CHARSET" != "utf8mb4" ]]; then
@@ -170,7 +196,7 @@ if [[ "$CHARSET" != "utf8mb4" ]]; then
        CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
        e deixe o Grafana recriar o schema antes de importar."
 else
-    ok "charset utf8mb4"
+    ok "Charset confirmado (utf8mb4)."
 fi
 
 MIG_SQLITE=$(sqlite3 "$SQLITE_FILE" "SELECT count(*) FROM migration_log")
@@ -183,18 +209,20 @@ if (( MIG_MYSQL < MIG_SQLITE )); then
 elif (( MIG_MYSQL > MIG_SQLITE )); then
     aviso "MySQL tem mais migrações ($MIG_MYSQL) que o SQLite ($MIG_SQLITE) — Grafana novo é mais recente; costuma funcionar, mas o ideal é igualar."
 else
-    ok "mesma versão do Grafana (migration_log: $MIG_SQLITE = $MIG_MYSQL)"
+    ok "Versões do Grafana compatíveis (migration_log: $MIG_SQLITE = $MIG_MYSQL)."
 fi
 
 # ------------------------------------------------------------- gerar o dump
 secao "Dump"
-bash "$MIGRATOR_DIR/sqlitedump-fixed.sh" "$(realpath "$SQLITE_FILE")" > "$DUMP_FILE"
-[[ -s "$DUMP_FILE" ]] || erro "dump saiu vazio — verifique erros acima"
+gerar_dump() { bash "$MIGRATOR_DIR/sqlitedump-fixed.sh" "$(realpath "$SQLITE_FILE")" > "$DUMP_FILE"; }
+passo "Gerando arquivo de dump" gerar_dump || erro "falha ao gerar o dump: $(tail -3 /tmp/.gm-passo.log)"
+[[ -s "$DUMP_FILE" ]] || erro "dump saiu vazio"
 grep -q 'NO_BACKSLASH_ESCAPES' "$DUMP_FILE" || erro "dump sem NO_BACKSLASH_ESCAPES"
-ok "gerado: ${CDIM}$DUMP_FILE${C0} ($(wc -l < "$DUMP_FILE") linhas)"
+nota "$DUMP_FILE ($(wc -l < "$DUMP_FILE") linhas)"
 
-grep -qE '[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6,9}[+-][0-9]{2}:[0-9]{2}' "$DUMP_FILE" \
-    && aviso "restaram timestamps formato Go no dump — o import pode falhar"
+if grep -qE '[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6,9}[+-][0-9]{2}:[0-9]{2}' "$DUMP_FILE"; then
+    aviso "restaram timestamps formato Go no dump — o import pode falhar"
+fi
 
 if (( SKIP_IMPORT )); then
     info "modo -n: import não executado."
@@ -206,9 +234,11 @@ secao "Import  ${CDIM}(as tabelas serão truncadas)${C0}"
 echo "  ${CY}⏸  Grafana precisa estar PARADO. Prosseguindo em 5s (Ctrl-C aborta)...${C0}"
 sleep 5
 
-if "${MYSQL_CMD[@]}" < "$DUMP_FILE"; then
-    ok "import concluído sem erros"
+importar() { "${MYSQL_CMD[@]}" < "$DUMP_FILE"; }
+if passo "Importando dados para o MySQL" importar; then
+    :
 else
+    tail -5 /tmp/.gm-passo.log >&2
     erro "import falhou (veja acima).
        Erros 1062 'Duplicate entry' = conflito de maiúsculas/minúsculas:
        edite $DUMP_FILE removendo uma das linhas conflitantes e reimporte:
@@ -218,7 +248,7 @@ fi
 # --------------------------------------------------------------- validação
 secao "Validação"
 for T in user org dashboard folder data_source; do
-    printf "  ${CDIM}·${C0} %-12s %s linhas\n" "$T" "$(sql "SELECT count(*) FROM \`$T\`" 2>/dev/null || echo '?')"
+    printf "  ${CDIM}•${C0} %-12s : %s registros\n" "$T" "$(sql "SELECT count(*) FROM \`$T\`" 2>/dev/null || echo '?')"
 done
 
 N_BAD_JSON=$(sql "SELECT count(*) FROM dashboard WHERE is_folder=0 AND JSON_VALID(data)=0" 2>/dev/null || echo 0)
@@ -226,10 +256,13 @@ if [[ "$N_BAD_JSON" != "0" ]]; then
     aviso "$N_BAD_JSON dashboard(s) com JSON inválido:"
     sql "SELECT uid, title FROM dashboard WHERE is_folder=0 AND JSON_VALID(data)=0"
 else
-    ok "JSON_VALID: todos os dashboards íntegros"
+    ok "Integridade: todos os dashboards aprovados no teste JSON_VALID."
 fi
 
 echo
-echo "${CG}${CB}  ✔ Migração concluída.${C0}"
-echo "${CDIM}  Próximos passos: inicie o Grafana e valide login, pastas,"
-echo "  dashboards e datasources. Usuários precisarão logar de novo.${C0}"
+echo "${CG}${CB}  ✔ MIGRAÇÃO CONCLUÍDA COM SUCESSO.${C0}"
+secao "Próximos passos"
+echo "  ${CDIM}1.${C0} Inicie o serviço do Grafana."
+echo "  ${CDIM}2.${C0} Valide o acesso (os usuários precisarão realizar um novo login)."
+echo "  ${CDIM}3.${C0} Verifique a integridade das pastas, dashboards e datasources."
+echo

@@ -29,7 +29,7 @@ else
     G="";R="";Y="";C="";B="";D="";N=""; ANIMA=0
 fi
  
-secao() { echo >&2; echo "${B}${C}▸${N} ${B}$*${N}" >&2; }
+secao() { echo >&2; echo "${B}${C}▸ $*${N}" >&2; }
 ok()    { echo "  ${G}✔${N} $*" >&2; }
 falha() { echo "  ${R}✘${N} $*" >&2; }
 aviso() { echo "  ${Y}⚠${N} $*" >&2; }
